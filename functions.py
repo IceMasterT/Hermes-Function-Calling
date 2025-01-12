@@ -295,13 +295,15 @@ def get_company_profile(symbol: str) -> dict:
         print(f"Error fetching company profile for {symbol}: {e}")
         return {}
 
+import requests
+
 @tool
 def get_current_crypto_price(symbol: str) -> float:
     """
     Get the current cryptocurrency price for a given symbol.
 
     Args:
-        symbol (str): The cryptocurrency symbol (e.g., BTC for Bitcoin).
+        symbol (str): The cryptocurrency symbol (e.g., bitcoin for Bitcoin).
 
     Returns:
         float: The current cryptocurrency price, or None if an error occurs.
@@ -321,7 +323,7 @@ def get_crypto_market_data(symbol: str) -> dict:
     Get market data for a given cryptocurrency symbol.
 
     Args:
-        symbol (str): The cryptocurrency symbol (e.g., BTC for Bitcoin).
+        symbol (str): The cryptocurrency symbol (e.g., bitcoin for Bitcoin).
 
     Returns:
         dict: A dictionary containing market data such as market cap, volume, and price change.
