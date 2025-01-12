@@ -3,11 +3,10 @@ pandas==2.2.0
 yfinance==0.2.36
 
 # Deep Learning & AI
-torch
+torch==2.4.1
 transformers>=4.38.1
 bitsandbytes>=0.41.1
 accelerate==0.27.2
-flash-attn==2.5.5
 ninja==1.11.1.1
 
 # Language Models & Processing
@@ -15,19 +14,28 @@ langchain==0.1.9
 sentencepiece
 protobuf
 
-# Web Scraping & Requests
-requests
+# Web Scraping & HTTP
+requests==2.32.3
 beautifulsoup4
+certifi==2024.12.14
+charset-normalizer==3.4.1
+idna==3.10
+urllib3==2.3.0
 
 # Data Validation & Formatting
 pydantic==2.6.2
 jsonschema==4.21.1
 pyyaml
+python-dotenv==1.0.1
+
+# File Processing
+PyPDF2==3.0.1
 
 # Visualization
 art
 
-# Comments for dependency groups
-# Core dependencies are pinned to specific versions
-# Some packages allow newer versions with '>='
-# Basic utilities left unpinned for compatibility
+# Note: flash-attn has been removed as it requires CUDA setup
+# If you need GPU support, you'll need to:
+# 1. Install CUDA toolkit
+# 2. Set CUDA_HOME environment variable
+# 3. Install the GPU version of PyTorch
