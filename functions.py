@@ -295,8 +295,6 @@ def get_company_profile(symbol: str) -> dict:
         print(f"Error fetching company profile for {symbol}: {e}")
         return {}
 
-import requests
-
 @tool
 def get_current_crypto_price(symbol: str) -> float:
     """
