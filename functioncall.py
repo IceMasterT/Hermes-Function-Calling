@@ -1,181 +1,218 @@
 import argparse
 import torch
 import json
+import logging
+from typing import Dict, List, Any, Tuple, Optional
+from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
+from dataclasses import dataclass
 
-from transformers import (
-    AutoModelForCausalLM,
-    AutoTokenizer,
-    BitsAndBytesConfig
-)
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-import functions
-from prompter import PromptManager
-from validator import validate_function_call_schema
+@dataclass
+class ModelConfig:
+    model_path: str
+    chat_template: str
+    load_in_4bit: bool
+    max_new_tokens: int = 1500
+    temperature: float = 0.8
+    repetition_penalty: float = 1.1
+    do_sample: bool = True
 
-from utils import (
-    print_nous_text_art,
-    inference_logger,
-    get_assistant_message,
-    get_chat_template,
-    validate_and_extract_tool_calls
-)
+class PromptManager:
+    def __init__(self, tools: List[Dict] = None):
+        self.tools = tools or []
+        self.few_shot_examples = self._load_few_shot_examples()
+
+    def _load_few_shot_examples(self) -> List[Dict]:
+        # Add your few-shot examples here
+        return [
+            {
+                "role": "user",
+                "content": "What's the current price of Bitcoin?",
+                "expected_function": "get_crypto_price",
+                "parameters": {"symbol": "BTC"}
+            }
+        ]
+
+    def generate_prompt(self, chat_history: List[Dict], tools: List[Dict], num_fewshot: int = None) -> List[Dict]:
+        prompt = []
+        
+        # Add few-shot examples if specified
+        if num_fewshot:
+            prompt.extend(self.few_shot_examples[:num_fewshot])
+            
+        # Add tools description
+        tools_desc = "\n".join([f"{tool['name']}: {tool['description']}" for tool in tools])
+        prompt.append({"role": "system", "content": f"Available tools:\n{tools_desc}"})
+        
+        # Add chat history
+        prompt.extend(chat_history)
+        
+        return prompt
 
 class ModelInference:
-    def __init__(self, model_path, chat_template, load_in_4bit):
-        inference_logger.info(print_nous_text_art())
+    def __init__(self, config: ModelConfig):
+        self.config = config
         self.prompter = PromptManager()
-        self.bnb_config = None
+        self.model, self.tokenizer = self._initialize_model()
+        logger.info(f"Model initialized with config: {self.model.config}")
 
-        if load_in_4bit == "True":
-            self.bnb_config = BitsAndBytesConfig(
+    def _initialize_model(self) -> Tuple[AutoModelForCausalLM, AutoTokenizer]:
+        # Initialize BitsAndBytes config if needed
+        bnb_config = None
+        if self.config.load_in_4bit:
+            bnb_config = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
                 bnb_4bit_use_double_quant=True,
             )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            model_path,
+
+        # Load model
+        model = AutoModelForCausalLM.from_pretrained(
+            self.config.model_path,
             trust_remote_code=True,
             return_dict=True,
-            quantization_config=self.bnb_config,
+            quantization_config=bnb_config,
             torch_dtype=torch.float16,
             attn_implementation="flash_attention_2",
             device_map="auto",
         )
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
-        self.tokenizer.pad_token = self.tokenizer.eos_token
-        self.tokenizer.padding_side = "left"
+        # Load tokenizer
+        tokenizer = AutoTokenizer.from_pretrained(
+            self.config.model_path,
+            trust_remote_code=True
+        )
+        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer.padding_side = "left"
 
-        if self.tokenizer.chat_template is None:
-            print("No chat template defined, getting chat_template...")
-            self.tokenizer.chat_template = get_chat_template(chat_template)
-        
-        inference_logger.info(self.model.config)
-        inference_logger.info(self.model.generation_config)
-        inference_logger.info(self.tokenizer.special_tokens_map)
+        # Set chat template if not defined
+        if tokenizer.chat_template is None:
+            tokenizer.chat_template = self.config.chat_template
 
-    def process_completion_and_validate(self, completion, chat_template):
+        return model, tokenizer
 
-        assistant_message = get_assistant_message(completion, chat_template, self.tokenizer.eos_token)
-
-        if assistant_message:
-            validation, tool_calls, error_message = validate_and_extract_tool_calls(assistant_message)
-
-            if validation:
-                inference_logger.info(f"parsed tool calls:\n{json.dumps(tool_calls, indent=2)}")
-                return tool_calls, assistant_message, error_message
-            else:
-                tool_calls = None
-                return tool_calls, assistant_message, error_message
-        else:
-            inference_logger.warning("Assistant message is None")
-            raise ValueError("Assistant message is None")
-        
-    def execute_function_call(self, tool_call):
-        function_name = tool_call.get("name")
-        function_to_call = getattr(functions, function_name, None)
-        function_args = tool_call.get("arguments", {})
-
-        inference_logger.info(f"Invoking function call {function_name} ...")
-        function_response = function_to_call(*function_args.values())
-        results_dict = f'{{"name": "{function_name}", "content": {function_response}}}'
-        return results_dict
-    
-    def run_inference(self, prompt):
+    def run_inference(self, prompt: List[Dict]) -> str:
+        # Tokenize input
         inputs = self.tokenizer.apply_chat_template(
             prompt,
             add_generation_prompt=True,
             return_tensors='pt'
         )
 
+        # Generate response
         tokens = self.model.generate(
             inputs.to(self.model.device),
-            max_new_tokens=1500,
-            temperature=0.8,
-            repetition_penalty=1.1,
-            do_sample=True,
+            max_new_tokens=self.config.max_new_tokens,
+            temperature=self.config.temperature,
+            repetition_penalty=self.config.repetition_penalty,
+            do_sample=self.config.do_sample,
             eos_token_id=self.tokenizer.eos_token_id
         )
-        completion = self.tokenizer.decode(tokens[0], skip_special_tokens=False, clean_up_tokenization_space=True)
+
+        # Decode response
+        completion = self.tokenizer.decode(
+            tokens[0], 
+            skip_special_tokens=False,
+            clean_up_tokenization_space=True
+        )
+
         return completion
 
-    def generate_function_call(self, query, chat_template, num_fewshot, max_depth=5):
+    def process_completion(self, completion: str) -> Tuple[Optional[List[Dict]], str, Optional[str]]:
+        """Process the model completion and extract function calls."""
         try:
-            depth = 0
-            user_message = f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
-            chat = [{"role": "user", "content": user_message}]
-            tools = functions.get_openai_tools()
-            prompt = self.prompter.generate_prompt(chat, tools, num_fewshot)
-            completion = self.run_inference(prompt)
+            # Extract assistant message
+            assistant_message = self._extract_assistant_message(completion)
+            if not assistant_message:
+                return None, "", "Failed to extract assistant message"
 
-            def recursive_loop(prompt, completion, depth):
-                nonlocal max_depth
-                tool_calls, assistant_message, error_message = self.process_completion_and_validate(completion, chat_template)
-                prompt.append({"role": "assistant", "content": assistant_message})
+            # Extract and validate function calls
+            tool_calls = self._extract_tool_calls(assistant_message)
+            if not tool_calls:
+                return None, assistant_message, None
 
-                tool_message = f"Agent iteration {depth} to assist with user query: {query}\n"
-                if tool_calls:
-                    inference_logger.info(f"Assistant Message:\n{assistant_message}")
-
-                    for tool_call in tool_calls:
-                        validation, message = validate_function_call_schema(tool_call, tools)
-                        if validation:
-                            try:
-                                function_response = self.execute_function_call(tool_call)
-                                tool_message += f"<tool_response>\n{function_response}\n</tool_response>\n"
-                                inference_logger.info(f"Here's the response from the function call: {tool_call.get('name')}\n{function_response}")
-                            except Exception as e:
-                                inference_logger.info(f"Could not execute function: {e}")
-                                tool_message += f"<tool_response>\nThere was an error when executing the function: {tool_call.get('name')}\nHere's the error traceback: {e}\nPlease call this function again with correct arguments within XML tags <tool_call></tool_call>\n</tool_response>\n"
-                        else:
-                            inference_logger.info(message)
-                            tool_message += f"<tool_response>\nThere was an error validating function call against function signature: {tool_call.get('name')}\nHere's the error traceback: {message}\nPlease call this function again with correct arguments within XML tags <tool_call></tool_call>\n</tool_response>\n"
-                    prompt.append({"role": "tool", "content": tool_message})
-
-                    depth += 1
-                    if depth >= max_depth:
-                        print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
-                        return
-
-                    completion = self.run_inference(prompt)
-                    recursive_loop(prompt, completion, depth)
-                elif error_message:
-                    inference_logger.info(f"Assistant Message:\n{assistant_message}")
-                    tool_message += f"<tool_response>\nThere was an error parsing function calls\n Here's the error stack trace: {error_message}\nPlease call the function again with correct syntax<tool_response>"
-                    prompt.append({"role": "tool", "content": tool_message})
-
-                    depth += 1
-                    if depth >= max_depth:
-                        print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
-                        return
-
-                    completion = self.run_inference(prompt)
-                    recursive_loop(prompt, completion, depth)
-                else:
-                    inference_logger.info(f"Assistant Message:\n{assistant_message}")
-
-            recursive_loop(prompt, completion, depth)
+            return tool_calls, assistant_message, None
 
         except Exception as e:
-            inference_logger.error(f"Exception occurred: {e}")
-            raise e
+            logger.error(f"Error processing completion: {e}")
+            return None, "", str(e)
 
-if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Run recursive function calling loop")
-    parser.add_argument("--model_path", type=str, help="Path to the model folder")
-    parser.add_argument("--chat_template", type=str, default="chatml", help="Chat template for prompt formatting")
-    parser.add_argument("--num_fewshot", type=int, default=None, help="Option to use json mode examples")
-    parser.add_argument("--load_in_4bit", type=str, default="False", help="Option to load in 4bit with bitsandbytes")
-    parser.add_argument("--query", type=str, default="I need the current stock price of Tesla (TSLA)")
-    parser.add_argument("--max_depth", type=int, default=5, help="Maximum number of recursive iteration")
+    def execute_function_call(self, tool_call: Dict) -> str:
+        """Execute a function call and return the result."""
+        try:
+            function_name = tool_call.get("name")
+            function_args = tool_call.get("arguments", {})
+            
+            # Import and execute function dynamically
+            module = __import__('functions')
+            function = getattr(module, function_name)
+            
+            result = function(**function_args)
+            return json.dumps({"name": function_name, "content": result})
+
+        except Exception as e:
+            logger.error(f"Error executing function {tool_call.get('name')}: {e}")
+            return json.dumps({"error": str(e)})
+
+    def generate_function_call(self, query: str, max_depth: int = 5) -> str:
+        """Generate and execute function calls recursively."""
+        try:
+            depth = 0
+            chat_history = [{"role": "user", "content": query}]
+            tools = self.prompter.tools
+
+            while depth < max_depth:
+                # Generate prompt and get completion
+                prompt = self.prompter.generate_prompt(chat_history, tools)
+                completion = self.run_inference(prompt)
+
+                # Process completion
+                tool_calls, assistant_message, error = self.process_completion(completion)
+                chat_history.append({"role": "assistant", "content": assistant_message})
+
+                if error:
+                    logger.error(f"Error at depth {depth}: {error}")
+                    break
+
+                if not tool_calls:
+                    break
+
+                # Execute function calls and add results to chat history
+                for tool_call in tool_calls:
+                    result = self.execute_function_call(tool_call)
+                    chat_history.append({"role": "function", "name": tool_call["name"], "content": result})
+
+                depth += 1
+
+            return chat_history[-1]["content"]
+
+        except Exception as e:
+            logger.error(f"Error in generate_function_call: {e}")
+            return str(e)
+
+def main():
+    parser = argparse.ArgumentParser(description="Run function call inference")
+    parser.add_argument("--model_path", type=str, default="NousResearch/Hermes-2-Pro-Llama-3-8B")
+    parser.add_argument("--chat_template", type=str, default="chatml")
+    parser.add_argument("--load_in_4bit", type=str, default="False")
+    parser.add_argument("--query", type=str, required=True)
+    parser.add_argument("--max_depth", type=int, default=5)
     args = parser.parse_args()
 
-    # specify custom model path
-    if args.model_path:
-        inference = ModelInference(args.model_path, args.chat_template, args.load_in_4bit)
-    else:
-        model_path = 'NousResearch/Hermes-2-Pro-Llama-3-8B'
-        inference = ModelInference(model_path, args.chat_template, args.load_in_4bit)
-        
-    # Run the model evaluator
-    inference.generate_function_call(args.query, args.chat_template, args.num_fewshot, args.max_depth)
+    # Create model config
+    config = ModelConfig(
+        model_path=args.model_path,
+        chat_template=args.chat_template,
+        load_in_4bit=args.load_in_4bit.lower() == "true"
+    )
+
+    # Initialize and run inference
+    inference = ModelInference(config)
+    result = inference.generate_function_call(args.query, args.max_depth)
+    print(f"Final result: {result}")
+
+if __name__ == "__main__":
+    main()
