@@ -295,6 +295,53 @@ def get_company_profile(symbol: str) -> dict:
         print(f"Error fetching company profile for {symbol}: {e}")
         return {}
 
+@tool
+def get_current_crypto_price(symbol: str) -> float:
+    """
+    Get the current cryptocurrency price for a given symbol.
+
+    Args:
+        symbol (str): The cryptocurrency symbol (e.g., BTC for Bitcoin).
+
+    Returns:
+        float: The current cryptocurrency price, or None if an error occurs.
+    """
+    try:
+        url = f'https://api.coingecko.com/api/v3/simple/price?ids={symbol}&vs_currencies=usd'
+        response = requests.get(url)
+        data = response.json()
+        return data[symbol]['usd']
+    except Exception as e:
+        print(f"Error fetching current price for {symbol}: {e}")
+        return None
+
+@tool
+def get_crypto_market_data(symbol: str) -> dict:
+    """
+    Get market data for a given cryptocurrency symbol.
+
+    Args:
+        symbol (str): The cryptocurrency symbol (e.g., BTC for Bitcoin).
+
+    Returns:
+        dict: A dictionary containing market data such as market cap, volume, and price change.
+    """
+    try:
+        url = f'https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids={symbol}'
+        response = requests.get(url)
+        data = response.json()[0]
+        market_data = {
+            'symbol': symbol,
+            'market_cap': data.get('market_cap', None),
+            'total_volume': data.get('total_volume', None),
+            'price_change_percentage_24h': data.get('price_change_percentage_24h', None),
+            'price_change_percentage_7d': data.get('price_change_percentage_7d', None),
+        }
+        return market_data
+    except Exception as e:
+        print(f"Error fetching market data for {symbol}: {e}")
+        return {}
+
 def get_openai_tools() -> List[dict]:
     functions = [
         code_interpreter,
@@ -307,7 +354,9 @@ def get_openai_tools() -> List[dict]:
         get_key_financial_ratios,
         get_analyst_recommendations,
         get_dividend_data,
-        get_technical_indicators
+        get_technical_indicators,
+        get_current_crypto_price,       # Add this line
+        get_crypto_market_data          # Add this line
     ]
 
     tools = [convert_to_openai_tool(f) for f in functions]
